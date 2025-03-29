@@ -1,0 +1,45 @@
+  <circle cx="250" cy="230" r="200" fill="url(#bgGradient)" stroke="#3498db" stroke-width="8"/>
+  
+  <!-- Pineapple Body with Gradient and Texture Pattern Overlay -->
+  <g>
+    <path d="M250,120 C290,120 320,150 320,200 C320,270 290,340 250,340 C210,340 180,270 180,200 C180,150 210,120 250,120 Z" fill="url(#pineappleGradient)"/>
+    <path d="M250,120 C290,120 320,150 320,200 C320,270 290,340 250,340 C210,340 180,270 180,200 C180,150 210,120 250,120 Z" fill="url(#pattern)" opacity="0.3"/>
+  </g>
+  
+  <!-- Pineapple Crown -->
+  <g fill="#32cd32">
+    <!-- First Layer of Leaves -->
+    <path d="M250,120 L240,90 L245,95 L235,65 L245,85 L255,55 L265,85 L275,65 L265,95 L270,90 Z"/>
+    <!-- Second Layer of Leaves -->
+    <path d="M250,120 L230,80 L235,85 L220,50 L235,70 L250,40 L265,70 L280,50 L265,85 L270,80 Z"/>
+  </g>
+  
+  <!-- Drone -->
+  <g id="drone">
+    <path d="M130,110 L150,100 L170,110 L150,120 Z" fill="#555555"/>
+    <circle cx="150" cy="110" r="10" fill="#3498db"/>
+    <circle cx="150" cy="110" r="4" fill="#000"/>
+    <path d="M110,90 L130,110 L110,130 Z" fill="#555555"/>
+    <path d="M190,90 L170,110 L190,130 Z" fill="#555555"/>
+  </g>
+  
+  <!-- AI/Data Visualization Elements -->
+  <g>
+    <path d="M350,270 L370,250 L390,270 L370,290 Z" fill="#3498db"/>
+    <path d="M330,290 L350,270 L370,290 L350,310 Z" fill="#9b59b6"/>
+    <path d="M370,290 L390,270 L410,290 L390,310 Z" fill="#9b59b6"/>
+    <path d="M350,310 L370,290 L390,310 L370,330 Z" fill="#3498db"/>
+  </g>
+  
+  <!-- Counter Element -->
+  <g transform="translate(370,190)">
+    <rect x="-20" y="-20" width="40" height="40" rx="5" fill="#3498db" opacity="0.8"/>
+    <text x="0" y="8" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#fff" text-anchor="middle">+1</text>
+  </g>
+  
+  <!-- Text Elements -->
+  <g transform="translate(250,385)" text-anchor="middle">
+    <text font-family="Arial, sans-serif" font-size="40" font-weight="bold" fill="#333">PineCount</text>
+    <text y="35" font-family="Arial, sans-serif" font-size="30" font-weight="bold" fill="#3498db">AI</text>
+  </g>
+</svg>
