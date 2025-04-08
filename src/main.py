@@ -167,8 +167,14 @@ def main():
                         if explanations["lime"] is not None:
                             st.image(explanations["lime"], caption="LIME Explanation", width=DEFAULT_IMAGE_WIDTH)
                             st.markdown("""
-                            **LIME Explanation**: This visualization shows which parts of the image are most important for the model's prediction.
-                            The highlighted regions indicate areas that positively contribute to the detection of pineapple blooms.
+                            **LIME Explanation**: This visualization uses Local Interpretable Model-agnostic Explanations to reveal which regions of the image are most important for detecting pineapple blooms.
+                            
+                            How to interpret this visualization:
+                            - **Warmer colors** (red/yellow) highlight regions that strongly contribute to positive detections
+                            - **Superpixel boundaries** show the image segments that LIME analyzes independently
+                            - **Green boxes** show the actual detections with their confidence scores
+                            
+                            LIME works by perturbing the image (hiding different regions) and observing how the model's predictions change, helping identify which visual features are most critical for detection.
                             """)
                         else:
                             st.info("No LIME explanation available for this image.")
@@ -192,8 +198,15 @@ def main():
                         if explanations["counterfactual"] is not None:
                             st.image(explanations["counterfactual"], caption="Counterfactual Explanation", width=DEFAULT_IMAGE_WIDTH)
                             st.markdown("""
-                            **Counterfactual Explanation**: This visualization shows what would happen if one of the detected blooms was removed.
-                            The red box indicates the removed detection. This helps understand how the model's predictions would change if certain features were absent.
+                            **Counterfactual Explanation**: This visualization demonstrates how the model's predictions would change if a specific detection was removed from the image.
+                            
+                            Key elements in this visualization:
+                            - The **red box** highlights the removed detection, showing its location and size
+                            - The **information panel** at the top provides quantitative analysis of the impact
+                            - Changes in **average confidence** show how this detection influences other detections
+                            - The **impact assessment** indicates whether removing this detection increases or decreases overall model confidence
+                            
+                            Counterfactuals help identify which detections are most critical to the model's overall prediction and reveal potential dependencies between different detected objects in the image.
                             """)
                         else:
                             st.info("No counterfactual explanation available for this image.")

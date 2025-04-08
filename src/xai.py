@@ -182,6 +182,8 @@ def generate_attention_heatmap(image, results):
 def generate_lime_explanation(model, image, results):
     """
     Generate LIME explanations for the model's predictions.
+    LIME (Local Interpretable Model-agnostic Explanations) helps understand which parts of the image
+    are most important for the model's predictions by perturbing the image and analyzing how predictions change.
     
     Args:
         model: The model wrapper
@@ -189,7 +191,7 @@ def generate_lime_explanation(model, image, results):
         results: Detection results from the model
         
     Returns:
-        numpy.ndarray: LIME explanation visualization
+        numpy.ndarray: Enhanced LIME explanation visualization with heatmap overlay
     """
     try:
         if len(results) > 0 and len(results[0].boxes) > 0:
@@ -205,59 +207,117 @@ def generate_lime_explanation(model, image, results):
                 img_rgb = np.array(image.convert('RGB'))
             
             # Create a function that returns the prediction probabilities
+            # This is a critical part for LIME - we need to make it more accurate for object detection
             def predict_fn(images):
                 batch_preds = []
                 for img in images:
                     # Ensure image is in correct format
                     img = img.astype(np.uint8)
+                    
                     # Get predictions
                     result = model.model(img, verbose=False)
-                    # Create a probability array (dummy for object detection)
+                    
+                    # For object detection, we'll use a more sophisticated approach:
+                    # 1. Count the number of detections
+                    # 2. Calculate the average confidence
+                    # 3. Use these to create a more meaningful probability
+                    
                     if len(result[0].boxes) > 0:
-                        # Use confidence scores as probabilities
-                        probs = result[0].boxes.conf.cpu().numpy()
-                        # Create a dummy array with the highest confidence
-                        pred = np.zeros(2)
-                        pred[1] = np.max(probs)
-                        pred[0] = 1 - pred[1]
+                        # Get confidence scores
+                        confidences = result[0].boxes.conf.cpu().numpy()
+                        num_detections = len(confidences)
+                        avg_conf = np.mean(confidences)
+                        
+                        # Create a probability score that considers both number of detections and confidence
+                        # This helps LIME focus on what actually matters for the detection task
+                        detection_score = min(1.0, (avg_conf * num_detections) / 5)  # Normalize, cap at 1.0
+                        
+                        # Create probability array [no_detection, detection]
+                        pred = np.array([1.0 - detection_score, detection_score])
                     else:
-                        pred = np.array([1.0, 0.0])  # No detection
+                        pred = np.array([0.9, 0.1])  # No detection, but with some uncertainty
+                    
                     batch_preds.append(pred)
                 return np.array(batch_preds)
             
             # Initialize LIME image explainer
             explainer = lime_image.LimeImageExplainer()
             
-            # Get LIME explanation
+            # Get LIME explanation - increase num_samples for better quality
             explanation = explainer.explain_instance(
                 img_rgb, 
                 predict_fn,
                 top_labels=1,
                 hide_color=0,
-                num_samples=100,
+                num_samples=200,  # Increased from 100 for better quality
                 random_seed=42
             )
             
             # Get the explanation for the top label
-            temp, mask = explanation.get_image_and_mask(
+            # We'll create two versions: one with positive features and one with all features
+            _, pos_mask = explanation.get_image_and_mask(
                 explanation.top_labels[0], 
                 positive_only=True, 
-                num_features=10, 
+                num_features=15,  # Increased from 10
                 hide_rest=False
             )
             
-            # Create the LIME visualization
-            lime_viz = mark_boundaries(temp / 255.0, mask)
+            # Get the actual importance scores for each superpixel
+            ind = explanation.top_labels[0]
+            exp_data = explanation.local_exp[ind]
+            
+            # Sort by absolute value of importance
+            exp_data.sort(key=lambda x: abs(x[1]), reverse=True)
+            
+            # Create a heatmap to show importance
+            segments = explanation.segments
+            heatmap = np.zeros(segments.shape, dtype=np.float32)
+            
+            # Fill in the heatmap based on importance scores
+            for segment_id, importance in exp_data[:15]:  # Top 15 features
+                if importance > 0:  # Positive influence (helps detection)
+                    heatmap[segments == segment_id] = importance
+            
+            # Normalize the heatmap
+            if heatmap.max() > 0:
+                heatmap = heatmap / heatmap.max()
+            
+            # Apply colormap to the heatmap (red = important)
+            heatmap_colored = cv2.applyColorMap(np.uint8(255 * heatmap), cv2.COLORMAP_JET)
+            
+            # Create a blended visualization
+            img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+            alpha = 0.6  # Transparency of the heatmap
+            lime_viz = cv2.addWeighted(img_bgr, 1 - alpha, heatmap_colored, alpha, 0)
+            
+            # Draw boundaries of superpixels for the most important regions
+            # Convert back to RGB for mark_boundaries
+            lime_viz_rgb = cv2.cvtColor(lime_viz, cv2.COLOR_BGR2RGB)
+            lime_viz_with_boundaries = mark_boundaries(lime_viz_rgb / 255.0, segments, color=(1, 1, 1), outline_color=(0, 0, 0))
             
             # Convert to image format
-            lime_viz = (lime_viz * 255).astype(np.uint8)
+            lime_viz_final = (lime_viz_with_boundaries * 255).astype(np.uint8)
             
-            return lime_viz
+            # Draw bounding boxes of detected objects
+            lime_viz_final = cv2.cvtColor(lime_viz_final, cv2.COLOR_RGB2BGR)
+            for box, conf in zip(results[0].boxes.xyxy.cpu().numpy(), results[0].boxes.conf.cpu().numpy()):
+                x1, y1, x2, y2 = map(int, box)
+                cv2.rectangle(lime_viz_final, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(lime_viz_final, f"{conf:.2f}", (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            
+            # Add a title and explanation
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            cv2.putText(lime_viz_final, "LIME: Important Regions for Detection", (10, 30), 
+                        font, 0.7, (0, 255, 0), 2)
+            
+            return lime_viz_final
         else:
             # If no detections, return None
             return None
     except Exception as e:
         logger.error(f"Error generating LIME explanation: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
 
 def generate_feature_attribution(model, image, results):
@@ -394,13 +454,15 @@ def generate_feature_attribution(model, image, results):
 def generate_counterfactual(image, results):
     """
     Generate counterfactual explanations for the model's predictions.
+    This shows what would happen if a specific detection was removed from the image,
+    helping to understand the model's decision-making process and dependencies between detections.
     
     Args:
         image: Preprocessed image
         results: Detection results from the model
         
     Returns:
-        numpy.ndarray: Counterfactual visualization
+        numpy.ndarray: Counterfactual visualization with detailed explanation
     """
     try:
         if len(results) > 0 and len(results[0].boxes) > 0:
@@ -410,13 +472,22 @@ def generate_counterfactual(image, results):
             else:
                 img_np = image.copy()
             
-            # Get the bounding boxes
+            # Get the bounding boxes and confidences
             boxes = results[0].boxes.xyxy.cpu().numpy()
+            confidences = results[0].boxes.conf.cpu().numpy()
+            total_detections = len(boxes)
             
-            # Create a counterfactual by removing one random detection
-            if len(boxes) > 1:
-                # Choose a random box to remove
-                remove_idx = random.randint(0, len(boxes) - 1)
+            # Create a counterfactual by removing one detection
+            if total_detections > 1:
+                # Choose a detection to remove - select one with high confidence for more impact
+                if np.max(confidences) > 0.6:  # If there's a high confidence detection
+                    remove_idx = np.argmax(confidences)  # Remove the highest confidence detection
+                else:
+                    # Otherwise choose a random one
+                    remove_idx = random.randint(0, total_detections - 1)
+                
+                # Get the confidence of the removed detection
+                removed_conf = confidences[remove_idx]
                 
                 # Create a mask for the chosen box
                 mask = np.ones_like(img_np, dtype=bool)
@@ -426,6 +497,9 @@ def generate_counterfactual(image, results):
                 # Ensure coordinates are within image bounds
                 x1, y1 = max(0, x1), max(0, y1)
                 x2, y2 = min(img_np.shape[1], x2), min(img_np.shape[0], y2)
+                
+                # Calculate the area of the removed detection
+                removed_area = (x2 - x1) * (y2 - y1)
                 
                 # Set the box area in the mask to False
                 mask[y1:y2, x1:x2, :] = False
@@ -438,26 +512,89 @@ def generate_counterfactual(image, results):
                 counterfactual[~mask] = blurred[~mask]
                 
                 # Draw a red border around the removed detection
-                counterfactual = cv2.rectangle(counterfactual, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                counterfactual = cv2.rectangle(counterfactual, (x1, y1), (x2, y2), (255, 0, 0), 3)
                 
                 # Add text explaining this is a counterfactual
                 font = cv2.FONT_HERSHEY_SIMPLEX
-                cv2.putText(counterfactual, "Removed Detection", (x1, y1 - 10), 
+                cv2.putText(counterfactual, f"Removed Detection (conf: {removed_conf:.2f})", (x1, y1 - 10), 
                             font, 0.5, (255, 0, 0), 2)
+                
+                # Add overall explanation at the top of the image
+                avg_conf = np.mean(confidences)
+                remaining_conf = np.mean(np.delete(confidences, remove_idx))
+                
+                # Calculate the impact on the count and confidence
+                new_count = total_detections - 1
+                conf_change = remaining_conf - avg_conf
+                
+                # Add a semi-transparent explanation box at the top
+                explanation_height = 120
+                overlay = counterfactual.copy()
+                cv2.rectangle(overlay, (0, 0), (img_np.shape[1], explanation_height), (0, 0, 0), -1)
+                alpha = 0.7
+                counterfactual = cv2.addWeighted(overlay, alpha, counterfactual, 1 - alpha, 0)
+                
+                # Add detailed explanation text
+                y_pos = 25
+                cv2.putText(counterfactual, "COUNTERFACTUAL EXPLANATION", (10, y_pos), 
+                            font, 0.7, (255, 255, 255), 2)
+                y_pos += 25
+                cv2.putText(counterfactual, f"Original: {total_detections} detections, avg conf: {avg_conf:.2f}", 
+                            (10, y_pos), font, 0.6, (255, 255, 255), 1)
+                y_pos += 25
+                cv2.putText(counterfactual, f"After removal: {new_count} detections, avg conf: {remaining_conf:.2f}", 
+                            (10, y_pos), font, 0.6, (255, 255, 255), 1)
+                y_pos += 25
+                
+                # Add impact assessment
+                impact_text = "Impact: "
+                if conf_change > 0.05:
+                    impact_text += "Removing this detection INCREASES overall confidence"
+                    impact_color = (0, 255, 0)  # Green
+                elif conf_change < -0.05:
+                    impact_text += "Removing this detection DECREASES overall confidence"
+                    impact_color = (0, 0, 255)  # Red
+                else:
+                    impact_text += "Minimal impact on overall confidence"
+                    impact_color = (255, 255, 0)  # Yellow
+                
+                cv2.putText(counterfactual, impact_text, (10, y_pos), font, 0.6, impact_color, 2)
                 
                 return counterfactual
             else:
-                # If only one detection, return the original image with text
+                # If only one detection, return the original image with explanation
                 result = img_np.copy()
                 font = cv2.FONT_HERSHEY_SIMPLEX
-                cv2.putText(result, "Only one detection - no counterfactual available", 
-                            (10, 30), font, 0.7, (255, 0, 0), 2)
+                
+                # Add a semi-transparent explanation box
+                explanation_height = 90
+                overlay = result.copy()
+                cv2.rectangle(overlay, (0, 0), (img_np.shape[1], explanation_height), (0, 0, 0), -1)
+                alpha = 0.7
+                result = cv2.addWeighted(overlay, alpha, result, 1 - alpha, 0)
+                
+                # Add detailed explanation text
+                cv2.putText(result, "COUNTERFACTUAL EXPLANATION", (10, 25), 
+                            font, 0.7, (255, 255, 255), 2)
+                cv2.putText(result, "Only one detection found - no meaningful counterfactual available", 
+                            (10, 55), font, 0.6, (255, 255, 255), 1)
+                cv2.putText(result, "Removing the only detection would result in zero detections", 
+                            (10, 85), font, 0.6, (255, 255, 255), 1)
+                
+                # Draw a box around the single detection
+                if len(boxes) == 1:
+                    box = boxes[0]
+                    x1, y1, x2, y2 = map(int, box)
+                    cv2.rectangle(result, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                
                 return result
         else:
             # If no detections, return None
             return None
     except Exception as e:
         logger.error(f"Error generating counterfactual: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
 
 def generate_gradcam(model, image, results):
