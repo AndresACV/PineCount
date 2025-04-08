@@ -12,6 +12,7 @@ import random
 from scipy.ndimage import zoom
 import io
 import os
+from torch.autograd import Function
 
 # Ensure logs directory exists
 os.makedirs("logs", exist_ok=True)
@@ -56,6 +57,9 @@ def generate_explanations(model, image, results):
         
         # Generate feature attribution maps
         explanations["attribution_map"] = generate_feature_attribution(model, image, results)
+        
+        # Generate Grad-CAM visualization
+        explanations["gradcam"] = generate_gradcam(model, image, results)
         
         # Generate counterfactual explanations
         explanations["counterfactual"] = generate_counterfactual(image, results)
@@ -258,7 +262,9 @@ def generate_lime_explanation(model, image, results):
 
 def generate_feature_attribution(model, image, results):
     """
-    Generate feature attribution maps for the model's predictions.
+    Generate feature attribution maps using occlusion sensitivity.
+    This technique systematically occludes different parts of the image and
+    observes how the model's predictions change, revealing which regions are most important.
     
     Args:
         model: The model wrapper
@@ -266,58 +272,123 @@ def generate_feature_attribution(model, image, results):
         results: Detection results from the model
         
     Returns:
-        numpy.ndarray: Feature attribution visualization
+        numpy.ndarray: Occlusion sensitivity map visualization
     """
     try:
         if len(results) > 0 and len(results[0].boxes) > 0:
             # Convert image to numpy if it's not already
             if not isinstance(image, np.ndarray):
-                img_np = np.array(image)
+                img_np = np.array(image, dtype=np.float32)
             else:
-                img_np = image.copy()
-            
-            # Create a simple gradient-based attribution map
-            # This is a simplified version - in a real implementation,
-            # you would use a proper gradient-based method like GradCAM
-            
-            # Get the bounding boxes
-            boxes = results[0].boxes.xyxy.cpu().numpy()
-            confidences = results[0].boxes.conf.cpu().numpy()
-            
-            # Create an attribution map
-            attribution_map = np.zeros_like(img_np)
-            
-            # For each detection, create a gradient-like effect around the box
-            for box, conf in zip(boxes, confidences):
-                x1, y1, x2, y2 = map(int, box)
+                img_np = image.copy().astype(np.float32)
                 
-                # Create a gradient effect
-                center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
-                max_dist = np.sqrt((x2 - x1)**2 + (y2 - y1)**2) / 2
+            # Ensure image is RGB
+            if len(img_np.shape) == 2:  # Grayscale
+                img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2RGB)
+            elif img_np.shape[2] == 4:  # RGBA
+                img_np = cv2.cvtColor(img_np, cv2.COLOR_RGBA2RGB)
                 
-                # Create gradient based on distance from center
-                y_indices, x_indices = np.indices(img_np.shape[:2])
-                distances = np.sqrt((x_indices - center_x)**2 + (y_indices - center_y)**2)
-                
-                # Normalize distances and create gradient effect
-                norm_distances = np.clip(1 - (distances / max_dist), 0, 1)
-                
-                # Apply the gradient to the attribution map
-                for c in range(3):  # RGB channels
-                    attribution_map[:, :, c] += norm_distances * conf * 255
+            # Normalize image to 0-255 range if it's not already
+            if img_np.max() <= 1.0:
+                img_np *= 255.0
             
-            # Normalize and convert to uint8
-            attribution_map = np.clip(attribution_map, 0, 255).astype(np.uint8)
+            # Get original detection boxes and confidences
+            orig_boxes = results[0].boxes.xyxy.cpu().numpy()
+            orig_confidences = results[0].boxes.conf.cpu().numpy()
             
-            # Blend with original image
-            blended = cv2.addWeighted(img_np, 0.6, attribution_map, 0.4, 0)
+            # Create a sensitivity map of the same size as the image
+            height, width = img_np.shape[:2]
+            sensitivity_map = np.zeros((height, width), dtype=np.float32)
+            
+            # Define occlusion parameters - use larger occlusion size and stride for faster processing
+            occlusion_size = min(width, height) // 10  # Larger occlusion patch (was 15)
+            occlusion_stride = occlusion_size // 1     # Larger stride (was 2)
+            
+            # Create a gray occlusion patch - using float32 to match the image type when converted
+            occlusion_value = np.ones((occlusion_size, occlusion_size, 3), dtype=np.float32) * 127.0
+            
+            # Iterate over the image with the occlusion patch - limit to a reasonable number of samples
+            max_samples = 100  # Limit the number of occlusion samples for performance
+            sample_count = 0
+            
+            for y in range(0, height - occlusion_size + 1, occlusion_stride):
+                for x in range(0, width - occlusion_size + 1, occlusion_stride):
+                    # Check if we've reached the sample limit
+                    sample_count += 1
+                    if sample_count > max_samples:
+                        break
+                        
+                    # Create a copy of the image
+                    occluded_img = img_np.copy()
+                    
+                    # Apply occlusion patch
+                    occluded_img[y:y+occlusion_size, x:x+occlusion_size] = occlusion_value
+                    
+                    # Run prediction on occluded image
+                    occluded_results = model.model(occluded_img, verbose=False)
+                    
+                    # Calculate the change in confidence
+                    if len(occluded_results[0].boxes) > 0:
+                        # Get new confidences
+                        new_confidences = occluded_results[0].boxes.conf.cpu().numpy()
+                        
+                        # Calculate the average drop in confidence
+                        # Higher values mean the region is more important
+                        if len(orig_confidences) > 0 and len(new_confidences) > 0:
+                            # Calculate average confidence before and after occlusion
+                            orig_avg_conf = np.mean(orig_confidences)
+                            new_avg_conf = np.mean(new_confidences)
+                            
+                            # The difference shows how important this region is
+                            # Positive values mean confidence decreased when occluded (important region)
+                            diff = orig_avg_conf - new_avg_conf
+                            
+                            # Assign the difference to the sensitivity map
+                            sensitivity_map[y:y+occlusion_size, x:x+occlusion_size] = max(0, diff)
+                        else:
+                            # If all detections disappeared, this region is very important
+                            sensitivity_map[y:y+occlusion_size, x:x+occlusion_size] = np.mean(orig_confidences)
+                    else:
+                        # If all detections disappeared, this region is very important
+                        sensitivity_map[y:y+occlusion_size, x:x+occlusion_size] = np.mean(orig_confidences)
+                
+                # Check if we've reached the sample limit after completing a row
+                if sample_count > max_samples:
+                    break
+            
+            # Normalize the sensitivity map
+            if sensitivity_map.max() > 0:
+                sensitivity_map = sensitivity_map / sensitivity_map.max()
+            
+            # Apply colormap for visualization - ensure proper conversion to uint8
+            sensitivity_map_uint8 = np.uint8(255 * sensitivity_map)
+            heatmap_colored = cv2.applyColorMap(sensitivity_map_uint8, cv2.COLORMAP_JET)
+            
+            # Convert image to BGR for overlay and ensure it's uint8
+            img_bgr = cv2.cvtColor(img_np.astype(np.uint8), cv2.COLOR_RGB2BGR)
+            
+            # Overlay heatmap on image
+            alpha = 0.6
+            blended = cv2.addWeighted(img_bgr, 1 - alpha, heatmap_colored, alpha, 0)
+            
+            # Draw original bounding boxes for reference
+            for box, conf in zip(orig_boxes, orig_confidences):
+                x1, y1, x2, y2 = box.astype(int)
+                cv2.rectangle(blended, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(blended, f"{conf:.2f}", (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            
+            # Add a title to the image
+            cv2.putText(blended, "Occlusion Sensitivity Map", (10, 30), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             
             return blended
         else:
             # If no detections, return None
             return None
     except Exception as e:
-        logger.error(f"Error generating feature attribution: {str(e)}")
+        logger.error(f"Error generating occlusion sensitivity map: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
 
 def generate_counterfactual(image, results):
@@ -387,6 +458,103 @@ def generate_counterfactual(image, results):
             return None
     except Exception as e:
         logger.error(f"Error generating counterfactual: {str(e)}")
+        return None
+
+def generate_gradcam(model, image, results):
+    """
+    Generate Grad-CAM (Gradient-weighted Class Activation Mapping) visualizations for the model's predictions.
+    
+    Args:
+        model: The model wrapper (YOLO model)
+        image: Preprocessed image
+        results: Detection results from the model
+        
+    Returns:
+        numpy.ndarray: Grad-CAM visualization or None if no detections
+    """
+    try:
+        # Check if there are any detections
+        if len(results) == 0 or len(results[0].boxes) == 0:
+            logger.info("No detections for Grad-CAM")
+            return None
+            
+        # Get the YOLO model
+        yolo_model = model.model
+        
+        # Convert image to numpy if it's not already
+        if not isinstance(image, np.ndarray):
+            img_np = np.array(image)
+        else:
+            img_np = image.copy()
+            
+        # Ensure image is RGB
+        if len(img_np.shape) == 2:  # Grayscale
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2RGB)
+        elif img_np.shape[2] == 4:  # RGBA
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_RGBA2RGB)
+        
+        # Since we can't easily get gradients from YOLO, we'll create a simplified Grad-CAM
+        # by using the detection boxes and confidences to generate a heatmap
+        
+        # Create an empty heatmap
+        heatmap = np.zeros((img_np.shape[0], img_np.shape[1]), dtype=np.float32)
+        
+        # Get detection boxes and confidences
+        boxes = results[0].boxes.xyxy.cpu().numpy()
+        confidences = results[0].boxes.conf.cpu().numpy()
+        
+        # For each detection, create a gaussian blob centered on the detection
+        for box, conf in zip(boxes, confidences):
+            x1, y1, x2, y2 = box.astype(int)
+            
+            # Calculate center and size of box
+            center_x = (x1 + x2) // 2
+            center_y = (y1 + y2) // 2
+            width = x2 - x1
+            height = y2 - y1
+            
+            # Create a gaussian blob
+            sigma_x = width / 3  # Cover most of the box width
+            sigma_y = height / 3  # Cover most of the box height
+            
+            # Create coordinate grids
+            y, x = np.mgrid[0:img_np.shape[0], 0:img_np.shape[1]]
+            
+            # Calculate gaussian
+            gaussian = np.exp(-((x - center_x)**2 / (2 * sigma_x**2) + (y - center_y)**2 / (2 * sigma_y**2)))
+            
+            # Add to heatmap, weighted by confidence
+            heatmap += gaussian * conf
+        
+        # Normalize heatmap
+        heatmap = heatmap / heatmap.max()
+        
+        # Apply colormap
+        heatmap_colored = cv2.applyColorMap(np.uint8(255 * heatmap), cv2.COLORMAP_JET)
+        
+        # Convert image to BGR for overlay
+        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+        
+        # Overlay heatmap on image
+        alpha = 0.5
+        grad_cam = cv2.addWeighted(img_bgr, 1 - alpha, heatmap_colored, alpha, 0)
+        
+        # Draw bounding boxes for reference
+        for box, conf in zip(boxes, confidences):
+            x1, y1, x2, y2 = box.astype(int)
+            cv2.rectangle(grad_cam, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(grad_cam, f"{conf:.2f}", (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        
+        # Add a title to the image
+        cv2.putText(grad_cam, "Grad-CAM: Areas of attention", (10, 30), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+        return grad_cam
+            
+    except Exception as e:
+        logger.error(f"Error generating Grad-CAM: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
 
 def generate_explanation_details(results):

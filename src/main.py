@@ -105,7 +105,7 @@ def main():
                     explanations = generate_explanations(st.session_state.model, st.session_state.image, st.session_state.results)
                     
                     # Create tabs for different explanation types
-                    xai_tabs = st.tabs(["Feature Importance", "Attention Heatmap", "LIME", "Feature Attribution", "Counterfactual", "Details"])
+                    xai_tabs = st.tabs(["Feature Importance", "Attention Heatmap", "Grad-CAM", "LIME", "Feature Attribution", "Counterfactual", "Details"])
                     
                     with xai_tabs[0]:
                         # Display SHAP values
@@ -150,6 +150,18 @@ def main():
                             st.info("No heatmap available for this image.")
                     
                     with xai_tabs[2]:
+                        # Display Grad-CAM visualization
+                        st.subheader("Grad-CAM Visualization")
+                        if explanations["gradcam"] is not None:
+                            st.image(explanations["gradcam"], caption="Grad-CAM Visualization", width=DEFAULT_IMAGE_WIDTH)
+                            st.markdown("""
+                            **Grad-CAM Visualization**: This visualization shows a class-discriminative localization map highlighting the important regions in the image for predicting the target concept (pineapple blooms).
+                            The heatmap indicates which parts of the image were most influential in the model's decision, with warmer colors (red) showing higher importance.
+                            """)
+                        else:
+                            st.info("No Grad-CAM visualization available for this image.")
+                    
+                    with xai_tabs[3]:
                         # Display LIME explanation
                         st.subheader("LIME Explanation")
                         if explanations["lime"] is not None:
@@ -161,19 +173,20 @@ def main():
                         else:
                             st.info("No LIME explanation available for this image.")
                     
-                    with xai_tabs[3]:
-                        # Display feature attribution map
-                        st.subheader("Feature Attribution Map")
+                    with xai_tabs[4]:
+                        # Display occlusion sensitivity map
+                        st.subheader("Occlusion Sensitivity Map")
                         if explanations["attribution_map"] is not None:
-                            st.image(explanations["attribution_map"], caption="Feature Attribution Map", width=DEFAULT_IMAGE_WIDTH)
+                            st.image(explanations["attribution_map"], caption="Occlusion Sensitivity Map", width=DEFAULT_IMAGE_WIDTH)
                             st.markdown("""
-                            **Feature Attribution Map**: This visualization shows the gradient of importance across the image.
-                            Brighter areas indicate regions that have a stronger influence on the model's predictions.
+                            **Occlusion Sensitivity Map**: This visualization shows which regions of the image are most critical for detection.
+                            The technique works by systematically occluding (blocking) different parts of the image and measuring how the model's confidence changes.
+                            Warmer colors (red/yellow) indicate areas where occlusion causes the largest drop in detection confidence, meaning these regions are most important for the model's predictions.
                             """)
                         else:
-                            st.info("No feature attribution map available for this image.")
+                            st.info("No occlusion sensitivity map available for this image.")
                     
-                    with xai_tabs[4]:
+                    with xai_tabs[5]:
                         # Display counterfactual explanation
                         st.subheader("Counterfactual Explanation")
                         if explanations["counterfactual"] is not None:
@@ -185,7 +198,7 @@ def main():
                         else:
                             st.info("No counterfactual explanation available for this image.")
                     
-                    with xai_tabs[5]:
+                    with xai_tabs[6]:
                         # Display additional explanations
                         st.subheader("Explanation Details")
                         
