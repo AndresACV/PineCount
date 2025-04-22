@@ -6,7 +6,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 <p align="center">
-  <img src="https://github.com/AndresACV/PineCount/raw/main/assets/pinecount-logo.svg" alt="PineCount AI Logo" width="200"/>
+  <img src="https://github.com/AndresACV/PineCount-AI/raw/main/assets/logo.png" alt="PineCount AI Logo" width="200"/>
 </p>
 
 > An advanced computer vision system for detecting and counting pineapple blooms in drone-captured imagery. This application combines YOLOv8 object detection with explainable AI techniques to provide insights into the model's decision-making process through an intuitive Streamlit interface.
